@@ -401,17 +401,21 @@ function positionPaneCursor(paneEl) {
   const content = paneEl?.querySelector(".tmux-pane-content");
   const pre = paneEl?.querySelector("pre");
   const cursor = paneEl?.querySelector(".tmux-cursor");
+  const layout = paneEl?.closest(".tmux-layout");
   if (!content || !pre || !cursor) {
     return;
   }
 
   const measure = document.createElement("span");
   measure.className = "cursor-measure";
-  measure.textContent = "M";
+  measure.textContent = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
   content.appendChild(measure);
 
-  const cellWidth = Math.max(measure.offsetWidth, 1);
-  const cellHeight = Math.max(measure.offsetHeight, 1);
+  const fitScale = Number.parseFloat(window.getComputedStyle(layout || paneEl).getPropertyValue("--fit-scale")) || 1;
+  const rect = measure.getBoundingClientRect();
+  const glyphCount = measure.textContent.length || 1;
+  const cellWidth = Math.max(rect.width / fitScale / glyphCount, 1);
+  const cellHeight = Math.max(rect.height / fitScale, 1);
   measure.remove();
 
   const preStyles = window.getComputedStyle(pre);
@@ -458,7 +462,6 @@ function renderAnsiToHTML(input) {
     const styles = [];
     if (sgr.fg) styles.push(`color:${sgr.fg}`);
     if (sgr.bg) styles.push(`background-color:${sgr.bg}`);
-    if (sgr.bold) styles.push("font-weight:700");
     const escaped = escapeHTML(text);
     html += styles.length ? `<span style="${styles.join(";")}">${escaped}</span>` : escaped;
     text = "";
@@ -517,38 +520,38 @@ function applySgr(sgr, raw) {
 
 function ansiColor(code) {
   const palette = {
-    30: "#1b1f23",
-    31: "#ff7b72",
-    32: "#7ee787",
-    33: "#f2cc60",
-    34: "#79c0ff",
-    35: "#d2a8ff",
-    36: "#56d4dd",
-    37: "#c9d1d9",
-    40: "#1b1f23",
-    41: "#ff7b72",
-    42: "#7ee787",
-    43: "#f2cc60",
-    44: "#79c0ff",
-    45: "#d2a8ff",
-    46: "#56d4dd",
-    47: "#c9d1d9",
-    90: "#6e7681",
-    91: "#ffa198",
-    92: "#56d364",
-    93: "#e3b341",
-    94: "#79c0ff",
-    95: "#bc8cff",
-    96: "#39c5cf",
-    97: "#f0f6fc",
-    100: "#6e7681",
-    101: "#ffa198",
-    102: "#56d364",
-    103: "#e3b341",
-    104: "#79c0ff",
-    105: "#bc8cff",
-    106: "#39c5cf",
-    107: "#f0f6fc",
+    30: "#101418",
+    31: "#ff3b30",
+    32: "#00e676",
+    33: "#ffd400",
+    34: "#248bff",
+    35: "#ff2bd6",
+    36: "#00e5ff",
+    37: "#eef6ff",
+    40: "#101418",
+    41: "#ff3b30",
+    42: "#00e676",
+    43: "#ffd400",
+    44: "#248bff",
+    45: "#ff2bd6",
+    46: "#00e5ff",
+    47: "#eef6ff",
+    90: "#56616c",
+    91: "#ff6b60",
+    92: "#4dff9f",
+    93: "#ffe24d",
+    94: "#5fa8ff",
+    95: "#ff6ee6",
+    96: "#52f1ff",
+    97: "#ffffff",
+    100: "#56616c",
+    101: "#ff6b60",
+    102: "#4dff9f",
+    103: "#ffe24d",
+    104: "#5fa8ff",
+    105: "#ff6ee6",
+    106: "#52f1ff",
+    107: "#ffffff",
   };
   return palette[code] || "";
 }

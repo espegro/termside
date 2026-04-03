@@ -202,6 +202,7 @@ body.is-resizing {
   display: grid;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 4px;
@@ -218,6 +219,8 @@ body.is-resizing {
   border-radius: 16px;
   padding: 12px;
   box-shadow: 0 10px 18px rgba(0, 0, 0, 0.18);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .layout.sidebar-collapsed .session-card {
@@ -241,6 +244,7 @@ body.is-resizing {
 
 .window-block {
   margin-top: 10px;
+  min-width: 0;
 }
 
 .layout.sidebar-collapsed .window-block {
@@ -269,10 +273,10 @@ body.is-resizing {
 }
 
 .pane-list {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 6px;
   margin-top: 6px;
+  min-width: 0;
 }
 
 .layout.sidebar-collapsed .pane-list {
@@ -289,12 +293,18 @@ body.is-resizing {
   color: var(--text);
   padding: 6px 10px;
   font: inherit;
+  display: flex;
+  width: calc(100% - 1px);
   max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pane-button {
-  display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   min-height: 32px;
   font-size: 0.76rem;
   line-height: 1;
