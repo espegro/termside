@@ -55,6 +55,10 @@ type Pane struct {
 	Active   bool   `json:"active"`
 	Target   string `json:"target"`
 	WindowID string `json:"windowId"`
+	Left     int    `json:"left"`
+	Top      int    `json:"top"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
 }
 
 type Snapshot struct {
@@ -69,8 +73,11 @@ type PaneSnapshot struct {
 	PaneID  string   `json:"paneId"`
 	Title   string   `json:"title"`
 	Active  bool     `json:"active"`
+	Left    int      `json:"left"`
+	Top     int      `json:"top"`
 	Width   int      `json:"width"`
 	Height  int      `json:"height"`
+	CursorX int      `json:"cursorX"`
 	CursorY int      `json:"cursorY"`
 	Lines   []string `json:"lines"`
 	Target  string   `json:"target"`
@@ -139,7 +146,7 @@ func (c *Client) Tree(ctx context.Context) (*Tree, error) {
 	if err != nil {
 		return nil, err
 	}
-	panesOut, err := c.runner.Run(ctx, "list-panes", "-a", "-F", "#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_active}\t#{session_name}:#{window_index}.#{pane_index}")
+	panesOut, err := c.runner.Run(ctx, "list-panes", "-a", "-F", "#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_active}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}")
 	if err != nil {
 		return nil, err
 	}
@@ -160,8 +167,12 @@ func (c *Client) Tree(ctx context.Context) (*Tree, error) {
 	}
 
 	panesByWindow := make(map[string][]Pane)
-	for _, row := range parseTSV(strings.TrimSpace(panesOut), 6) {
+	for _, row := range parseTSV(strings.TrimSpace(panesOut), 10) {
 		idx, _ := strconv.Atoi(row[2])
+		left, _ := strconv.Atoi(row[6])
+		top, _ := strconv.Atoi(row[7])
+		width, _ := strconv.Atoi(row[8])
+		height, _ := strconv.Atoi(row[9])
 		panesByWindow[row[0]] = append(panesByWindow[row[0]], Pane{
 			ID:       row[1],
 			Index:    idx,
@@ -169,6 +180,10 @@ func (c *Client) Tree(ctx context.Context) (*Tree, error) {
 			Active:   row[4] == "1",
 			Target:   row[5],
 			WindowID: row[0],
+			Left:     left,
+			Top:      top,
+			Width:    width,
+			Height:   height,
 		})
 	}
 
@@ -225,6 +240,33 @@ func (c *Client) SnapshotWithTree(ctx context.Context, tree *Tree, target string
 	return nil, fmt.Errorf("tmux target not found: %s", target)
 }
 
+func (c *Client) StateKeys(ctx context.Context, tree *Tree) (map[string]string, error) {
+	out, err := c.runner.Run(ctx, "list-panes", "-a", "-F", "#{session_name}:#{window_index}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{history_size}\t#{pane_title}\t#{pane_active}")
+	if err != nil {
+		return nil, err
+	}
+	rows := parseTSV(strings.TrimSpace(out), 11)
+	paneKeys := make(map[string]string, len(rows))
+	windowKeys := make(map[string][]string)
+	for _, row := range rows {
+		key := strings.Join(row[2:], "\t")
+		windowTarget := row[0]
+		paneTarget := row[1]
+		paneKeys[paneTarget] = key
+		windowKeys[windowTarget] = append(windowKeys[windowTarget], paneTarget+"="+key)
+	}
+	keys := make(map[string]string)
+	for _, session := range tree.Sessions {
+		for _, window := range session.Windows {
+			keys[window.Target] = strings.Join(windowKeys[window.Target], "|")
+			for _, pane := range window.Panes {
+				keys[pane.Target] = paneKeys[pane.Target]
+			}
+		}
+	}
+	return keys, nil
+}
+
 func (c *Client) snapshotWindow(ctx context.Context, window Window) (*Snapshot, error) {
 	snap := &Snapshot{
 		Target:   window.Target,
@@ -255,23 +297,28 @@ func (c *Client) snapshotPane(ctx context.Context, window Window, pane Pane) (*S
 }
 
 func (c *Client) capturePane(ctx context.Context, pane Pane) (*PaneSnapshot, error) {
-	sizeOut, err := c.runner.Run(ctx, "display-message", "-p", "-t", pane.Target, "#{pane_width}\t#{pane_height}\t#{cursor_y}")
+	sizeOut, err := c.runner.Run(ctx, "display-message", "-p", "-t", pane.Target, "#{cursor_x}\t#{cursor_y}")
 	if err != nil {
 		return nil, err
 	}
-	sizeRow := parseTSV(strings.TrimSpace(sizeOut), 3)
+	sizeRow := parseTSV(strings.TrimSpace(sizeOut), 2)
 	if len(sizeRow) == 0 {
-		return nil, errors.New("failed to read pane dimensions")
+		return nil, errors.New("failed to read pane cursor")
 	}
-	width, _ := strconv.Atoi(sizeRow[0][0])
-	height, _ := strconv.Atoi(sizeRow[0][1])
-	cursorY, _ := strconv.Atoi(sizeRow[0][2])
+	cursorX, _ := strconv.Atoi(sizeRow[0][0])
+	cursorY, _ := strconv.Atoi(sizeRow[0][1])
 
 	out, err := c.runner.Run(ctx, "capture-pane", "-e", "-p", "-t", pane.Target)
 	if err != nil {
 		return nil, err
 	}
-	lines := normalizeCaptureLines(out, height)
+	lines := normalizeCaptureLines(out, pane.Height)
+	if cursorX < 0 {
+		cursorX = 0
+	}
+	if cursorX >= pane.Width {
+		cursorX = max(pane.Width-1, 0)
+	}
 	if cursorY < 0 {
 		cursorY = 0
 	}
@@ -283,8 +330,11 @@ func (c *Client) capturePane(ctx context.Context, pane Pane) (*PaneSnapshot, err
 		PaneID:  pane.ID,
 		Title:   pane.Title,
 		Active:  pane.Active,
-		Width:   width,
-		Height:  height,
+		Left:    pane.Left,
+		Top:     pane.Top,
+		Width:   pane.Width,
+		Height:  pane.Height,
+		CursorX: cursorX,
 		CursorY: cursorY,
 		Lines:   lines,
 		Target:  pane.Target,

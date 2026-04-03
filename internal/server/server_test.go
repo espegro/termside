@@ -26,10 +26,11 @@ func newTestApp(t *testing.T) *App {
 	client := tmux.NewClientWithRunner(fakeTmuxRunner{
 		outputs: map[string]string{
 			"list-sessions -F #{session_id}\t#{session_name}": "#S1\tmain\n",
-			"list-windows -a -F #{session_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{session_name}:#{window_index}": "#S1\t@1\t0\teditor\t1\t1\tmain:0\n",
-			"list-panes -a -F #{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_active}\t#{session_name}:#{window_index}.#{pane_index}":              "@1\t%1\t0\tvim\t1\tmain:0.0\n",
-			"display-message -p -t main:0.0 #{pane_width}\t#{pane_height}\t#{cursor_y}":                                                                           "120\t30\t29\n",
-			"capture-pane -e -p -t main:0.0": "line1\n",
+			"list-windows -a -F #{session_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{session_name}:#{window_index}":                                                                                 "#S1\t@1\t0\teditor\t1\t1\tmain:0\n",
+			"list-panes -a -F #{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_active}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}":                                    "@1\t%1\t0\tvim\t1\tmain:0.0\t0\t0\t120\t30\n",
+			"list-panes -a -F #{session_name}:#{window_index}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{history_size}\t#{pane_title}\t#{pane_active}": "main:0\tmain:0.0\t0\t0\t120\t30\t0\t29\t1\tvim\t1\n",
+			"display-message -p -t main:0.0 #{cursor_x}\t#{cursor_y}": "7\t29\n",
+			"capture-pane -e -p -t main:0.0":                          "line1\n",
 		},
 	})
 	app, err := New(Config{
@@ -71,7 +72,9 @@ func TestBootstrapSetsCookie(t *testing.T) {
 func TestViewReturnsSnapshot(t *testing.T) {
 	app := newTestApp(t)
 	sessionID := "session"
-	app.sessions.set(sessionID, sessionData{Target: "main:0.0"})
+	app.sessions.set(sessionID, sessionData{
+		Target: "main:0.0",
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/view", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionID})
@@ -80,30 +83,25 @@ func TestViewReturnsSnapshot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+
 	var payload struct {
-		Snapshot tmux.Snapshot `json:"snapshot"`
+		SelectedTarget string         `json:"selectedTarget"`
+		Snapshot       *tmux.Snapshot `json:"snapshot"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode error = %v", err)
 	}
-	if payload.Snapshot.Target != "main:0.0" {
-		t.Fatalf("unexpected target %q", payload.Snapshot.Target)
+	if payload.SelectedTarget != "main:0.0" || payload.Snapshot == nil || payload.Snapshot.Target != "main:0.0" {
+		t.Fatalf("unexpected payload %+v", payload)
 	}
 }
 
 func TestViewRetargetsWhenPaneDisappears(t *testing.T) {
 	app := newTestApp(t)
-	app.cfg.Tmux = tmux.NewClientWithRunner(fakeTmuxRunner{
-		outputs: map[string]string{
-			"list-sessions -F #{session_id}\t#{session_name}": "#S1\tmain\n",
-			"list-windows -a -F #{session_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{session_name}:#{window_index}": "#S1\t@1\t0\teditor\t1\t1\tmain:0\n",
-			"list-panes -a -F #{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_active}\t#{session_name}:#{window_index}.#{pane_index}":              "@1\t%1\t0\tvim\t1\tmain:0.0\n",
-			"display-message -p -t main:0.0 #{pane_width}\t#{pane_height}\t#{cursor_y}":                                                                           "120\t30\t29\n",
-			"capture-pane -e -p -t main:0.0": "line1\n",
-		},
-	})
 	sessionID := "session"
-	app.sessions.set(sessionID, sessionData{Target: "missing:9.9"})
+	app.sessions.set(sessionID, sessionData{
+		Target: "missing:9.9",
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/view", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionID})
@@ -112,14 +110,16 @@ func TestViewRetargetsWhenPaneDisappears(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+
 	var payload struct {
-		Retargeted bool          `json:"retargeted"`
-		Snapshot   tmux.Snapshot `json:"snapshot"`
+		Retargeted     bool           `json:"retargeted"`
+		SelectedTarget string         `json:"selectedTarget"`
+		Snapshot       *tmux.Snapshot `json:"snapshot"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode error = %v", err)
 	}
-	if !payload.Retargeted || payload.Snapshot.Target != "main:0.0" {
+	if !payload.Retargeted || payload.SelectedTarget != "main:0.0" || payload.Snapshot == nil || payload.Snapshot.Target != "main:0.0" {
 		t.Fatalf("unexpected payload %+v", payload)
 	}
 }
@@ -150,7 +150,9 @@ func TestShutdownRespondsWithMessage(t *testing.T) {
 	app := newTestApp(t)
 	app.BeginShutdown("Server stopping")
 	sessionID := "session"
-	app.sessions.set(sessionID, sessionData{Target: "main:0.0"})
+	app.sessions.set(sessionID, sessionData{
+		Target: "main:0.0",
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/view", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionID})
@@ -170,7 +172,9 @@ func TestShutdownRespondsWithMessage(t *testing.T) {
 
 func TestBuildStatePayloadIncludesTreeAndSnapshot(t *testing.T) {
 	app := newTestApp(t)
-	app.sessions.set("session", sessionData{Target: "main:0.0"})
+	app.sessions.set("session", sessionData{
+		Target: "main:0.0",
+	})
 
 	payload, _, err := app.buildStatePayload(context.Background(), "session", true, nil)
 	if err != nil {
@@ -201,5 +205,18 @@ func TestSessionTouchRefreshesLastSeen(t *testing.T) {
 	}
 	if !session.LastSeen.After(before) {
 		t.Fatalf("expected LastSeen to be refreshed, got %v <= %v", session.LastSeen, before)
+	}
+}
+
+func TestNextStreamIntervalBacksOffWhenIdle(t *testing.T) {
+	base := 1500 * time.Millisecond
+	if got := nextStreamInterval(base, 0); got != base {
+		t.Fatalf("expected base interval, got %v", got)
+	}
+	if got := nextStreamInterval(base, 2); got <= base {
+		t.Fatalf("expected backoff above base, got %v", got)
+	}
+	if got := nextStreamInterval(base, 10); got > 8*time.Second {
+		t.Fatalf("expected capped interval, got %v", got)
 	}
 }

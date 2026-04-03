@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -10,9 +11,11 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +35,7 @@ type Config struct {
 	Secret          string
 	RefreshInterval time.Duration
 	InitialTarget   string
+	TLSConfig       *tls.Config
 	Tmux            *tmux.Client
 }
 
@@ -110,9 +114,15 @@ func (a *App) ListenAndServe() (*http.Server, string, error) {
 	server := &http.Server{
 		Handler:     a.mux,
 		ReadTimeout: 10 * time.Second,
+		TLSConfig:   a.cfg.TLSConfig,
+		ErrorLog:    log.New(filteredServerLogWriter{out: os.Stderr}, "", log.LstdFlags),
 	}
 	go func() {
-		_ = server.Serve(ln)
+		listener := net.Listener(ln)
+		if a.cfg.TLSConfig != nil {
+			listener = tls.NewListener(listener, a.cfg.TLSConfig)
+		}
+		_ = server.Serve(listener)
 	}()
 	return server, publicAddr, nil
 }
@@ -233,12 +243,18 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request, sessionID str
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ticker := time.NewTicker(a.cfg.RefreshInterval)
-	defer ticker.Stop()
-
 	treeEvery := 4
 	iteration := 0
 	var cachedTree *tmux.Tree
+	var cachedSnapshot *tmux.Snapshot
+	lastTarget := ""
+	lastStateKey := ""
+	lastPayloadHash := ""
+	lastHeartbeat := time.Now()
+	idleStreak := 0
+	timer := time.NewTimer(a.cfg.RefreshInterval)
+	defer timer.Stop()
+
 	for {
 		a.sessions.touch(sessionID, remoteHost(r.RemoteAddr), r.UserAgent())
 		if a.shuttingDown.Load() {
@@ -248,21 +264,56 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request, sessionID str
 			flusher.Flush()
 			return
 		}
+
 		includeTree := iteration%treeEvery == 0 || cachedTree == nil
-		payload, nextTree, err := a.buildStatePayload(r.Context(), sessionID, includeTree, cachedTree)
+		payload, nextTree, nextSnapshot, nextTarget, nextKey, err := a.buildStreamStatePayload(
+			r.Context(),
+			sessionID,
+			includeTree,
+			cachedTree,
+			cachedSnapshot,
+			lastTarget,
+			lastStateKey,
+		)
 		if err != nil {
 			_ = writeSSE(w, "error", map[string]any{"message": err.Error()})
+			lastPayloadHash = ""
+			idleStreak = 0
 		} else {
 			cachedTree = nextTree
-			_ = writeSSE(w, "state", payload)
+			cachedSnapshot = nextSnapshot
+			lastTarget = nextTarget
+			lastStateKey = nextKey
+
+			payloadHash := hashPayload(payload)
+			if payloadHash != lastPayloadHash {
+				_ = writeSSE(w, "state", payload)
+				lastPayloadHash = payloadHash
+				idleStreak = 0
+				lastHeartbeat = time.Now()
+			} else {
+				idleStreak++
+				if time.Since(lastHeartbeat) >= 15*time.Second {
+					_, _ = fmt.Fprint(w, ": keepalive\n\n")
+					lastHeartbeat = time.Now()
+				}
+			}
 		}
 		flusher.Flush()
 		iteration++
 
+		nextInterval := nextStreamInterval(a.cfg.RefreshInterval, idleStreak)
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(nextInterval)
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
@@ -313,15 +364,48 @@ func (a *App) buildStatePayload(ctx context.Context, sessionID string, includeTr
 	return payload, tree, nil
 }
 
+func (a *App) buildStreamStatePayload(ctx context.Context, sessionID string, includeTree bool, cachedTree *tmux.Tree, cachedSnapshot *tmux.Snapshot, cachedTarget, cachedStateKey string) (map[string]any, *tmux.Tree, *tmux.Snapshot, string, string, error) {
+	tree := cachedTree
+	var err error
+	if includeTree || tree == nil {
+		tree, err = a.cfg.Tmux.Tree(ctx)
+		if err != nil {
+			return nil, nil, nil, "", "", err
+		}
+	}
+
+	session, retargeted := a.sessions.normalize(sessionID, tree, a.cfg.InitialTarget)
+	stateKeys, err := a.cfg.Tmux.StateKeys(ctx, tree)
+	if err != nil {
+		return nil, nil, nil, "", "", err
+	}
+
+	target := session.Target
+	stateKey := stateKeys[target]
+	snapshot := cachedSnapshot
+	if snapshot == nil || cachedTarget != target || cachedStateKey != stateKey {
+		snapshot, err = a.cfg.Tmux.SnapshotWithTree(ctx, tree, target)
+		if err != nil {
+			return nil, nil, nil, "", "", err
+		}
+	}
+
+	payload := map[string]any{
+		"retargeted":     retargeted,
+		"selectedTarget": target,
+		"snapshot":       snapshot,
+	}
+	if includeTree {
+		payload["tree"] = tree
+	}
+	return payload, tree, snapshot, target, stateKey, nil
+}
+
 func (a *App) buildViewPayload(ctx context.Context, sessionID, requestedTarget string, cachedTree *tmux.Tree) (map[string]any, error) {
-	session, ok := a.sessions.get(sessionID)
-	if !ok {
-		return nil, errors.New("session missing")
+	if requestedTarget != "" {
+		a.sessions.updateTarget(sessionID, requestedTarget)
 	}
-	target := requestedTarget
-	if target == "" {
-		target = session.Target
-	}
+
 	tree := cachedTree
 	var err error
 	if tree == nil {
@@ -330,30 +414,16 @@ func (a *App) buildViewPayload(ctx context.Context, sessionID, requestedTarget s
 			return nil, err
 		}
 	}
-	snap, err := a.cfg.Tmux.SnapshotWithTree(ctx, tree, target)
+	session, retargeted := a.sessions.normalize(sessionID, tree, a.cfg.InitialTarget)
+	snapshot, err := a.cfg.Tmux.SnapshotWithTree(ctx, tree, session.Target)
 	if err != nil {
-		fallback, fallbackErr := a.cfg.Tmux.Tree(ctx)
-		if fallbackErr != nil {
-			return nil, err
-		}
-		replacement, replacementErr := fallback.FirstPaneTarget()
-		if replacementErr != nil {
-			return nil, err
-		}
-		target = replacement
-		snap, err = a.cfg.Tmux.SnapshotWithTree(ctx, fallback, target)
-		if err != nil {
-			return nil, err
-		}
-		a.sessions.updateTarget(sessionID, target)
-		return map[string]any{
-			"retargeted": true,
-			"snapshot":   snap,
-		}, nil
+		return nil, err
 	}
-	a.sessions.updateTarget(sessionID, target)
+
 	return map[string]any{
-		"snapshot": snap,
+		"retargeted":     retargeted,
+		"selectedTarget": session.Target,
+		"snapshot":       snapshot,
 	}, nil
 }
 
@@ -370,12 +440,13 @@ func (s *sessionStore) set(id string, data sessionData) {
 	s.data[id] = data
 }
 
-func (s *sessionStore) updateTarget(id, target string) {
+func (s *sessionStore) updateTarget(id, target string) sessionData {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	data := s.data[id]
 	data.Target = target
 	s.data[id] = data
+	return data
 }
 
 func (s *sessionStore) touch(id, remoteAddr, userAgent string) {
@@ -395,6 +466,37 @@ func (s *sessionStore) touch(id, remoteAddr, userAgent string) {
 	s.data[id] = data
 }
 
+func (s *sessionStore) normalize(id string, tree *tmux.Tree, fallback string) (sessionData, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data := s.data[id]
+	valid := make(map[string]struct{})
+	for _, session := range tree.Sessions {
+		for _, window := range session.Windows {
+			valid[window.Target] = struct{}{}
+			for _, pane := range window.Panes {
+				valid[pane.Target] = struct{}{}
+			}
+		}
+	}
+
+	retargeted := false
+	if _, ok := valid[data.Target]; !ok {
+		if fallback == "" {
+			if next, err := tree.FirstPaneTarget(); err == nil {
+				fallback = next
+			}
+		}
+		if fallback != "" {
+			data.Target = fallback
+			retargeted = true
+		}
+	}
+	s.data[id] = data
+	return data, retargeted
+}
+
 func (s *sessionStore) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -404,6 +506,7 @@ func (s *sessionStore) clear() {
 func (s *sessionStore) activeSince(window time.Duration) []ClientInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	cutoff := time.Now().Add(-window)
 	clients := make([]ClientInfo, 0, len(s.data))
 	for id, data := range s.data {
@@ -466,4 +569,51 @@ func writeSSE(w http.ResponseWriter, event string, payload any) error {
 		return err
 	}
 	return nil
+}
+
+func hashPayload(payload any) string {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func nextStreamInterval(base time.Duration, idleStreak int) time.Duration {
+	if base <= 0 {
+		base = 1500 * time.Millisecond
+	}
+	switch {
+	case idleStreak >= 6:
+		return minDuration(8*base, 8*time.Second)
+	case idleStreak >= 3:
+		return minDuration(4*base, 5*time.Second)
+	case idleStreak >= 1:
+		return minDuration(2*base, 3*time.Second)
+	default:
+		return base
+	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+type filteredServerLogWriter struct {
+	out *os.File
+}
+
+func (w filteredServerLogWriter) Write(p []byte) (int, error) {
+	message := string(p)
+	if strings.Contains(message, "http: TLS handshake error") && strings.Contains(message, "unknown certificate") {
+		return len(p), nil
+	}
+	_, err := w.out.Write(p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

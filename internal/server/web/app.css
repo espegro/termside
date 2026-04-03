@@ -12,6 +12,8 @@
   --font-ui: "IBM Plex Sans", "Segoe UI", sans-serif;
   --font-mono: "DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono", "Ubuntu Mono", monospace;
   --terminal-scale: 1;
+  --terminal-font-size: calc(0.9rem * var(--terminal-scale));
+  --terminal-line-height: 1.35;
 }
 
 html {
@@ -33,7 +35,7 @@ body {
   font-family: var(--font-ui);
   min-width: 0;
   max-width: 100vw;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 body.is-resizing {
@@ -63,8 +65,7 @@ body.is-resizing {
   grid-template-columns: minmax(180px, var(--sidebar-width)) 10px minmax(0, 1fr);
   min-width: 0;
   max-width: 100vw;
-  overflow-x: clip;
-  overflow-y: hidden;
+  overflow: hidden;
 }
 
 .layout.sidebar-collapsed {
@@ -291,22 +292,6 @@ body.is-resizing {
   max-width: 100%;
 }
 
-.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 34px;
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(34, 43, 53, 0.88);
-  color: var(--text);
-  font: inherit;
-  line-height: 1;
-  flex: 0 0 auto;
-}
-
 .pane-button {
   display: inline-flex;
   align-items: center;
@@ -326,13 +311,28 @@ body.is-resizing {
   box-shadow: inset 0 0 0 1px rgba(139, 211, 255, 0.14);
 }
 
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(34, 43, 53, 0.88);
+  color: var(--text);
+  font: inherit;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
 .content {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
   max-width: 100%;
-  overflow-x: hidden;
-  overflow-y: hidden;
+  overflow: hidden;
 }
 
 .toolbar {
@@ -350,89 +350,162 @@ body.is-resizing {
 }
 
 .panes {
-  display: grid;
-  grid-template-columns: repeat(var(--pane-count, 1), minmax(0, 1fr));
-  gap: 16px;
   min-width: 0;
   min-height: 0;
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
   padding-right: 4px;
-  align-content: start;
 }
 
-.pane {
-  background: rgba(20, 26, 32, 0.9);
+.tmux-scene {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: 20px;
-  overflow: hidden;
+  background: rgba(20, 26, 32, 0.92);
   box-shadow: 0 18px 42px var(--shadow);
-  min-width: 0;
-  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
   display: flex;
-  flex-direction: column;
 }
 
-.pane-viewport {
-  width: 100%;
-  max-width: 100%;
+.tmux-viewport {
+  flex: 1;
   min-width: 0;
   min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.tmux-layout-shell {
+  position: relative;
+  width: max-content;
+  height: max-content;
+}
+
+.tmux-layout {
+  position: relative;
+  min-width: calc(var(--layout-cols) * 1ch + 2px);
+  min-height: calc(var(--layout-rows) * var(--terminal-line-height) * 1em + 2px);
+  width: calc(var(--layout-cols) * 1ch + 2px);
+  height: calc(var(--layout-rows) * var(--terminal-line-height) * 1em + 2px);
+  font-family: var(--font-mono);
+  font-size: var(--terminal-font-size);
+  line-height: var(--terminal-line-height);
+  transform-origin: top left;
+  transform: scale(var(--fit-scale, 1));
+}
+
+.tmux-pane {
+  position: absolute;
+  left: calc(var(--pane-left) * 1ch);
+  top: calc(var(--pane-top) * var(--terminal-line-height) * 1em);
+  width: calc(var(--pane-width) * 1ch);
+  height: calc(var(--pane-height) * var(--terminal-line-height) * 1em);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(10, 14, 18, 0.9);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tmux-pane.active {
+  border-color: rgba(139, 211, 255, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(139, 211, 255, 0.12);
+}
+
+.tmux-pane-title {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 1;
+  max-width: calc(100% - 16px);
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  color: var(--muted);
+  background: rgba(17, 21, 26, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.tmux-pane-body {
   flex: 1;
-  overflow-x: auto;
-  overflow-y: auto;
-  overscroll-behavior-x: contain;
-  overscroll-behavior-y: contain;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
 
-.pane-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  background: var(--panel-alt);
-  border-bottom: 1px solid var(--border);
+.tmux-pane-content {
+  position: relative;
+  min-width: max-content;
+  width: max-content;
+  min-height: 100%;
 }
 
-.pane-title {
-  font-weight: 600;
-  min-width: 0;
-  overflow-wrap: anywhere;
+.tmux-cursor {
+  position: absolute;
+  border-radius: 2px;
+  background: rgba(139, 211, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(139, 211, 255, 0.18);
+  mix-blend-mode: screen;
+  pointer-events: none;
+  animation: cursor-blink 1s steps(1) infinite;
 }
 
-.pane-meta {
-  color: var(--muted);
-  font-size: 0.9rem;
+.cursor-measure {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+
+@keyframes cursor-blink {
+  0%, 49% {
+    opacity: 0.92;
+  }
+  50%, 100% {
+    opacity: 0.18;
+  }
 }
 
 pre {
   margin: 0;
-  padding: 16px;
+  padding: 8px 10px;
   min-width: max-content;
   width: max-content;
   font-family: var(--font-mono);
-  font-size: calc(0.92rem * var(--terminal-scale));
-  line-height: calc(1.4 * var(--terminal-scale));
+  font-size: inherit;
+  line-height: inherit;
   white-space: pre;
   color: #f0f6fc;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.06), transparent);
+  background: transparent;
+}
+
+.empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  color: var(--muted);
 }
 
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: minmax(180px, var(--sidebar-width, 220px)) 10px minmax(0, 1fr);
-    grid-template-rows: 1fr;
-  }
-
-  .sidebar {
-    border-right: 1px solid var(--border);
-    border-bottom: 0;
-  }
-
-  .toolbar {
-    gap: 4px;
   }
 
   .sidebar,
@@ -440,15 +513,8 @@ pre {
     padding: 16px;
   }
 
-  .pane-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-  }
-
-  pre {
-    font-size: 0.82rem;
-    padding: 12px;
+  .toolbar {
+    gap: 4px;
   }
 }
 
@@ -471,7 +537,7 @@ pre {
     margin-top: 16px;
   }
 
-  .panes {
-    grid-template-columns: 1fr;
+  .tmux-scene {
+    padding: 8px;
   }
 }
