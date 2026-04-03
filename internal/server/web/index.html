@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Termside</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div id="shutdown-banner" class="shutdown-banner" hidden>Connection to the terminal host was closed.</div>
+  <main class="layout">
+    <section class="sidebar">
+      <div class="sidebar-top">
+        <div class="sidebar-head">
+          <div class="brand">
+            <p class="eyebrow">Local tmux viewer</p>
+            <h1>Termside</h1>
+          </div>
+          <button id="sidebar-min-button" class="icon-button" type="button" aria-label="Minimize navigation">◧</button>
+        </div>
+        <div class="sidebar-meta">
+          <div id="tree-summary" class="summary-pill">Waiting for tmux…</div>
+          <div id="sidebar-selected" class="selected-chip">No target selected</div>
+        </div>
+        <div class="sidebar-controls">
+          <button id="fullscreen-button" class="icon-button" type="button" aria-label="Toggle fullscreen">⛶</button>
+          <button id="zoom-out-button" class="icon-button" type="button" aria-label="Zoom out">A-</button>
+          <button id="zoom-reset-button" class="icon-button" type="button" aria-label="Reset zoom">A</button>
+          <button id="zoom-in-button" class="icon-button" type="button" aria-label="Zoom in">A+</button>
+          <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh">↻</button>
+        </div>
+      </div>
+      <div id="tree" class="tree"></div>
+    </section>
+    <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="Resize navigation" aria-orientation="vertical"></div>
+    <section class="content">
+      <div class="toolbar">
+        <p class="eyebrow">Selected target</p>
+        <h2 id="target-label">Loading…</h2>
+        <span id="status" class="status">Connecting…</span>
+      </div>
+      <div id="panes" class="panes"></div>
+    </section>
+  </main>
+  <script>window.__BOOTSTRAP__ = {{.Bootstrap}};</script>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
