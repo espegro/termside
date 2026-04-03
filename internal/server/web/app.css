@@ -456,30 +456,49 @@ body.is-resizing {
   overflow: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  background: #0f1418;
 }
 
-.tmux-pane-content {
+.xterm-host {
   position: relative;
   min-width: max-content;
   width: max-content;
-  min-height: 100%;
+  min-height: max-content;
+  height: max-content;
+  padding: 8px 10px;
 }
 
-.tmux-cursor {
+.xterm-host .terminal {
+  padding: 0;
+}
+
+.xterm-host .xterm {
+  font-family: var(--font-mono);
+}
+
+.xterm-host .xterm-viewport,
+.xterm-host .xterm-screen,
+.xterm-host .xterm-scroll-area {
+  background: transparent !important;
+}
+
+.xterm-host .xterm-viewport {
+  overflow: hidden !important;
+}
+
+.xterm-host .xterm-screen canvas {
+  image-rendering: optimizeSpeed;
+  image-rendering: pixelated;
+}
+
+.tmux-cursor-overlay {
   position: absolute;
   border-radius: 2px;
   background: rgba(139, 211, 255, 0.9);
-  box-shadow: 0 0 0 1px rgba(139, 211, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(139, 211, 255, 0.2);
   mix-blend-mode: screen;
   pointer-events: none;
   animation: cursor-blink 1s steps(1) infinite;
-}
-
-.cursor-measure {
-  position: absolute;
-  visibility: hidden;
-  white-space: pre;
-  pointer-events: none;
 }
 
 @keyframes cursor-blink {
@@ -489,19 +508,6 @@ body.is-resizing {
   50%, 100% {
     opacity: 0.18;
   }
-}
-
-pre {
-  margin: 0;
-  padding: 8px 10px;
-  min-width: max-content;
-  width: max-content;
-  font-family: var(--font-mono);
-  font-size: inherit;
-  line-height: inherit;
-  white-space: pre;
-  color: #f0f6fc;
-  background: transparent;
 }
 
 .empty-state {

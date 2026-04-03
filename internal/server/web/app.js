@@ -5,7 +5,10 @@ const state = {
   snapshot: null,
   tree: null,
   stream: null,
+  layoutKey: "",
 };
+
+const paneTerminals = new Map();
 
 const treeEl = document.getElementById("tree");
 const panesEl = document.getElementById("panes");
@@ -166,14 +169,31 @@ function renderTree() {
 }
 
 function renderSnapshot(snapshot) {
-  panesEl.innerHTML = "";
   if (!snapshot || !Array.isArray(snapshot.panes) || snapshot.panes.length === 0) {
+    disposePaneTerminals();
+    state.layoutKey = "";
+    panesEl.innerHTML = "";
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.textContent = "No tmux panes available.";
     panesEl.appendChild(empty);
     return;
   }
+
+  const layoutKey = snapshotLayoutKey(snapshot);
+  const existingLayout = panesEl.querySelector(".tmux-layout");
+  if (!existingLayout || state.layoutKey !== layoutKey) {
+    buildSnapshotLayout(snapshot, layoutKey);
+    return;
+  }
+
+  updatePaneTerminals(snapshot);
+  alignSnapshotView(existingLayout, snapshot);
+}
+
+function buildSnapshotLayout(snapshot, layoutKey) {
+  disposePaneTerminals();
+  panesEl.innerHTML = "";
 
   const scene = document.createElement("section");
   scene.className = "tmux-scene";
@@ -208,31 +228,51 @@ function renderSnapshot(snapshot) {
     const body = document.createElement("div");
     body.className = "tmux-pane-body";
 
-    const content = document.createElement("div");
-    content.className = "tmux-pane-content";
-
-    const pre = document.createElement("pre");
-    pre.innerHTML = renderAnsiToHTML((pane.lines || []).join("\n"));
-    content.appendChild(pre);
-
-    if (pane.active) {
-      const cursor = document.createElement("div");
-      cursor.className = "tmux-cursor";
-      cursor.dataset.cursorX = String(pane.cursorX || 0);
-      cursor.dataset.cursorY = String(pane.cursorY || 0);
-      content.appendChild(cursor);
-    }
-
-    body.appendChild(content);
+    const host = document.createElement("div");
+    host.className = "xterm-host";
+    body.appendChild(host);
     paneEl.appendChild(body);
     layout.appendChild(paneEl);
+
+    const terminalState = createPaneTerminal(host, pane);
+    paneTerminals.set(pane.target, terminalState);
   }
 
   shell.appendChild(layout);
   viewport.appendChild(shell);
   scene.appendChild(viewport);
   panesEl.appendChild(scene);
+  state.layoutKey = layoutKey;
 
+  alignSnapshotView(layout, snapshot);
+}
+
+function updatePaneTerminals(snapshot) {
+  for (const pane of snapshot.panes) {
+    const terminalState = paneTerminals.get(pane.target);
+    if (!terminalState) {
+      continue;
+    }
+    terminalState.term.reset();
+    terminalState.term.resize(Math.max(pane.width, 2), Math.max(pane.height, 1));
+    terminalState.term.write(buildTerminalFrame(pane));
+    updateCursorOverlay(terminalState, pane);
+  }
+}
+
+function disposePaneTerminals() {
+  for (const terminalState of paneTerminals.values()) {
+    terminalState.term.dispose();
+  }
+  paneTerminals.clear();
+}
+
+function alignSnapshotView(layout, snapshot) {
+  const viewport = layout.closest(".tmux-viewport");
+  const shell = layout.closest(".tmux-layout-shell");
+  if (!viewport || !shell) {
+    return;
+  }
   requestAnimationFrame(() => {
     fitLayoutToViewport(viewport, shell, layout);
     for (const [index, pane] of snapshot.panes.entries()) {
@@ -241,11 +281,105 @@ function renderSnapshot(snapshot) {
       if (body) {
         alignPaneToCursor(body, pane.cursorY || 0);
       }
-      if (pane.active) {
-        positionPaneCursor(paneEl);
+      const terminalState = paneTerminals.get(pane.target);
+      if (terminalState) {
+        updateCursorOverlay(terminalState, pane);
       }
     }
   });
+}
+
+function snapshotLayoutKey(snapshot) {
+  return snapshot.panes
+    .map((pane) => `${pane.target}:${pane.left},${pane.top},${pane.width},${pane.height}`)
+    .join("|");
+}
+
+function createPaneTerminal(host, pane) {
+  const term = new Terminal({
+    cols: Math.max(pane.width, 2),
+    rows: Math.max(pane.height, 1),
+    allowTransparency: true,
+    convertEol: false,
+    cursorBlink: false,
+    cursorStyle: "block",
+    cursorInactiveStyle: "block",
+    disableStdin: true,
+    drawBoldTextInBrightColors: true,
+    fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim(),
+    fontSize: scaledFontSize(),
+    lineHeight: 1,
+    scrollback: 0,
+    theme: {
+      background: "#0f1418",
+      foreground: "#eef6ff",
+      black: "#101418",
+      red: "#ff3b30",
+      green: "#00e676",
+      yellow: "#ffd400",
+      blue: "#248bff",
+      magenta: "#ff2bd6",
+      cyan: "#00e5ff",
+      white: "#eef6ff",
+      brightBlack: "#56616c",
+      brightRed: "#ff6b60",
+      brightGreen: "#4dff9f",
+      brightYellow: "#ffe24d",
+      brightBlue: "#5fa8ff",
+      brightMagenta: "#ff6ee6",
+      brightCyan: "#52f1ff",
+      brightWhite: "#ffffff",
+      cursor: "#8bd3ff",
+      cursorAccent: "#0f1418",
+      selectionBackground: "rgba(139, 211, 255, 0.18)",
+    },
+  });
+  term.open(host);
+  term.resize(Math.max(pane.width, 2), Math.max(pane.height, 1));
+  term.write(buildTerminalFrame(pane));
+  const cursor = document.createElement("div");
+  cursor.className = "tmux-cursor-overlay";
+  host.appendChild(cursor);
+  const terminalState = { term, host, cursor };
+  updateCursorOverlay(terminalState, pane);
+  return terminalState;
+}
+
+function buildTerminalFrame(pane) {
+  const content = (pane.lines || []).join("\r\n");
+  const row = clamp((pane.cursorY || 0) + 1, 1, Math.max(pane.height, 1));
+  const col = clamp((pane.cursorX || 0) + 1, 1, Math.max(pane.width, 1));
+  const cursor = pane.active ? `\u001b[?25h\u001b[${row};${col}H` : "\u001b[?25l";
+  return `\u001b[0m\u001b[2J\u001b[H${content}${cursor}`;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function scaledFontSize() {
+  return Math.max(8, 14 * zoom.value);
+}
+
+function updateCursorOverlay(terminalState, pane) {
+  const { term, cursor, host } = terminalState;
+  if (!pane.active) {
+    cursor.hidden = true;
+    return;
+  }
+  const cell = term?._core?._renderService?.dimensions?.css?.cell;
+  if (!cell || !cell.width || !cell.height) {
+    cursor.hidden = true;
+    return;
+  }
+  const hostStyle = window.getComputedStyle(host);
+  const paddingLeft = parseFloat(hostStyle.paddingLeft) || 0;
+  const paddingTop = parseFloat(hostStyle.paddingTop) || 0;
+  cursor.hidden = false;
+  cursor.style.left = `${paddingLeft + Math.max(0, pane.cursorX || 0) * cell.width}px`;
+  cursor.style.top = `${paddingTop + Math.max(0, pane.cursorY || 0) * cell.height}px`;
+  cursor.style.width = `${cell.width}px`;
+  cursor.style.height = `${cell.height}px`;
 }
 
 function setStatus(text) {
@@ -309,6 +443,9 @@ function setZoom(nextValue) {
 function applyZoom() {
   document.documentElement.style.setProperty("--terminal-scale", String(zoom.value));
   setStatus(`Zoom ${Math.round(zoom.value * 100)}%`);
+  if (state.snapshot) {
+    renderSnapshot(state.snapshot);
+  }
 }
 
 async function toggleFullscreen() {
@@ -388,46 +525,13 @@ function startSidebarResize(event) {
 }
 
 function alignPaneToCursor(body, cursorY) {
-  const pre = body.querySelector("pre");
-  if (!pre) {
+  const screen = body.querySelector(".xterm-screen");
+  if (!screen) {
     return;
   }
-  const lineHeight = parseFloat(window.getComputedStyle(pre).lineHeight) || 16;
+  const lineHeight = parseFloat(window.getComputedStyle(screen).lineHeight) || screen.getBoundingClientRect().height || 16;
   const nextScrollTop = Math.max(0, cursorY * lineHeight - body.clientHeight + lineHeight * 2);
   body.scrollTop = nextScrollTop;
-}
-
-function positionPaneCursor(paneEl) {
-  const content = paneEl?.querySelector(".tmux-pane-content");
-  const pre = paneEl?.querySelector("pre");
-  const cursor = paneEl?.querySelector(".tmux-cursor");
-  const layout = paneEl?.closest(".tmux-layout");
-  if (!content || !pre || !cursor) {
-    return;
-  }
-
-  const measure = document.createElement("span");
-  measure.className = "cursor-measure";
-  measure.textContent = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
-  content.appendChild(measure);
-
-  const fitScale = Number.parseFloat(window.getComputedStyle(layout || paneEl).getPropertyValue("--fit-scale")) || 1;
-  const rect = measure.getBoundingClientRect();
-  const glyphCount = measure.textContent.length || 1;
-  const cellWidth = Math.max(rect.width / fitScale / glyphCount, 1);
-  const cellHeight = Math.max(rect.height / fitScale, 1);
-  measure.remove();
-
-  const preStyles = window.getComputedStyle(pre);
-  const paddingLeft = parseFloat(preStyles.paddingLeft) || 0;
-  const paddingTop = parseFloat(preStyles.paddingTop) || 0;
-  const cursorX = Number(cursor.dataset.cursorX || "0");
-  const cursorY = Number(cursor.dataset.cursorY || "0");
-
-  cursor.style.left = `${paddingLeft + cursorX * cellWidth}px`;
-  cursor.style.top = `${paddingTop + cursorY * cellHeight}px`;
-  cursor.style.width = `${cellWidth}px`;
-  cursor.style.height = `${cellHeight}px`;
 }
 
 function fitLayoutToViewport(viewport, shell, layout) {
@@ -446,153 +550,12 @@ function fitLayoutToViewport(viewport, shell, layout) {
   shell.style.height = `${Math.ceil(layoutHeight * fitScale)}px`;
 }
 
-function renderAnsiToHTML(input) {
-  const sgr = {
-    fg: "",
-    bg: "",
-    bold: false,
-  };
-  let html = "";
-  let text = "";
-
-  function flush() {
-    if (!text) {
-      return;
-    }
-    const styles = [];
-    if (sgr.fg) styles.push(`color:${sgr.fg}`);
-    if (sgr.bg) styles.push(`background-color:${sgr.bg}`);
-    const escaped = escapeHTML(text);
-    html += styles.length ? `<span style="${styles.join(";")}">${escaped}</span>` : escaped;
-    text = "";
-  }
-
-  for (let i = 0; i < input.length; i += 1) {
-    if (input[i] === "\u001b" && input[i + 1] === "[") {
-      flush();
-      const end = input.indexOf("m", i + 2);
-      if (end === -1) {
-        break;
-      }
-      applySgr(sgr, input.slice(i + 2, end));
-      i = end;
-      continue;
-    }
-    text += input[i];
-  }
-  flush();
-  return html;
-}
-
-function applySgr(sgr, raw) {
-  const codes = raw === "" ? [0] : raw.split(";").map((part) => Number(part || 0));
-  for (let i = 0; i < codes.length; i += 1) {
-    const code = codes[i];
-    if (code === 0) {
-      sgr.fg = "";
-      sgr.bg = "";
-      sgr.bold = false;
-    } else if (code === 1) {
-      sgr.bold = true;
-    } else if (code === 22) {
-      sgr.bold = false;
-    } else if (code === 39) {
-      sgr.fg = "";
-    } else if (code === 49) {
-      sgr.bg = "";
-    } else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
-      sgr.fg = ansiColor(code);
-    } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
-      sgr.bg = ansiColor(code);
-    } else if ((code === 38 || code === 48) && codes[i + 1] === 5 && Number.isInteger(codes[i + 2])) {
-      const color = ansi256Color(codes[i + 2]);
-      if (code === 38) sgr.fg = color;
-      if (code === 48) sgr.bg = color;
-      i += 2;
-    } else if ((code === 38 || code === 48) && codes[i + 1] === 2 && Number.isInteger(codes[i + 2]) && Number.isInteger(codes[i + 3]) && Number.isInteger(codes[i + 4])) {
-      const color = `rgb(${codes[i + 2]}, ${codes[i + 3]}, ${codes[i + 4]})`;
-      if (code === 38) sgr.fg = color;
-      if (code === 48) sgr.bg = color;
-      i += 4;
-    }
-  }
-}
-
-function ansiColor(code) {
-  const palette = {
-    30: "#101418",
-    31: "#ff3b30",
-    32: "#00e676",
-    33: "#ffd400",
-    34: "#248bff",
-    35: "#ff2bd6",
-    36: "#00e5ff",
-    37: "#eef6ff",
-    40: "#101418",
-    41: "#ff3b30",
-    42: "#00e676",
-    43: "#ffd400",
-    44: "#248bff",
-    45: "#ff2bd6",
-    46: "#00e5ff",
-    47: "#eef6ff",
-    90: "#56616c",
-    91: "#ff6b60",
-    92: "#4dff9f",
-    93: "#ffe24d",
-    94: "#5fa8ff",
-    95: "#ff6ee6",
-    96: "#52f1ff",
-    97: "#ffffff",
-    100: "#56616c",
-    101: "#ff6b60",
-    102: "#4dff9f",
-    103: "#ffe24d",
-    104: "#5fa8ff",
-    105: "#ff6ee6",
-    106: "#52f1ff",
-    107: "#ffffff",
-  };
-  return palette[code] || "";
-}
-
-function ansi256Color(code) {
-  if (code < 16) {
-    const base = [
-      "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
-      "#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff",
-    ];
-    return base[code];
-  }
-  if (code >= 232) {
-    const value = 8 + (code - 232) * 10;
-    return `rgb(${value}, ${value}, ${value})`;
-  }
-  const n = code - 16;
-  const r = Math.floor(n / 36);
-  const g = Math.floor((n % 36) / 6);
-  const b = n % 6;
-  const channel = [0, 95, 135, 175, 215, 255];
-  return `rgb(${channel[r]}, ${channel[g]}, ${channel[b]})`;
-}
-
-function escapeHTML(input) {
-  return input
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
 window.addEventListener("resize", () => {
   applySidebarCollapsed(loadSidebarCollapsed());
   applySidebarWidth(loadSidebarWidth());
-  const viewport = document.querySelector(".tmux-viewport");
-  const shell = document.querySelector(".tmux-layout-shell");
-  const layout = document.querySelector(".tmux-layout");
-  if (viewport && shell && layout) {
-    fitLayoutToViewport(viewport, shell, layout);
+  if (state.snapshot) {
+    renderSnapshot(state.snapshot);
   }
-  document.querySelectorAll(".tmux-pane.active").forEach((paneEl) => positionPaneCursor(paneEl));
 });
 
 init();

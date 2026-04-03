@@ -124,6 +124,49 @@ func TestViewRetargetsWhenPaneDisappears(t *testing.T) {
 	}
 }
 
+func TestViewPromotesPaneTargetToWindowWhenWindowSplits(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.Tmux = tmux.NewClientWithRunner(fakeTmuxRunner{
+		outputs: map[string]string{
+			"list-sessions -F #{session_id}\t#{session_name}": "#S1\tmain\n",
+			"list-windows -a -F #{session_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{session_name}:#{window_index}":                                                                                 "#S1\t@1\t0\teditor\t1\t2\tmain:0\n",
+			"list-panes -a -F #{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_active}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}":                                    "@1\t%1\t0\tvim\t1\tmain:0.0\t0\t0\t60\t30\n@1\t%2\t1\tshell\t0\tmain:0.1\t60\t0\t60\t30\n",
+			"list-panes -a -F #{session_name}:#{window_index}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{history_size}\t#{pane_title}\t#{pane_active}": "main:0\tmain:0.0\t0\t0\t60\t30\t7\t29\t1\tvim\t1\nmain:0\tmain:0.1\t60\t0\t60\t30\t0\t29\t1\tshell\t0\n",
+			"display-message -p -t main:0.0 #{cursor_x}\t#{cursor_y}": "7\t29\n",
+			"display-message -p -t main:0.1 #{cursor_x}\t#{cursor_y}": "0\t29\n",
+			"capture-pane -e -p -t main:0.0":                          "left\n",
+			"capture-pane -e -p -t main:0.1":                          "right\n",
+		},
+	})
+	sessionID := "session"
+	app.sessions.set(sessionID, sessionData{
+		Target: "main:0.0",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/view", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionID})
+	rec := httptest.NewRecorder()
+	app.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload struct {
+		Retargeted     bool           `json:"retargeted"`
+		SelectedTarget string         `json:"selectedTarget"`
+		Snapshot       *tmux.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error = %v", err)
+	}
+	if !payload.Retargeted || payload.SelectedTarget != "main:0" {
+		t.Fatalf("unexpected payload %+v", payload)
+	}
+	if payload.Snapshot == nil || len(payload.Snapshot.Panes) != 2 {
+		t.Fatalf("expected split window snapshot, got %+v", payload.Snapshot)
+	}
+}
+
 func TestActiveClientsReturnsRecentSessions(t *testing.T) {
 	app := newTestApp(t)
 	app.sessions.set("fresh", sessionData{
@@ -218,5 +261,14 @@ func TestNextStreamIntervalBacksOffWhenIdle(t *testing.T) {
 	}
 	if got := nextStreamInterval(base, 10); got > 8*time.Second {
 		t.Fatalf("expected capped interval, got %v", got)
+	}
+}
+
+func TestForcedSnapshotIntervalCapsRefreshFallback(t *testing.T) {
+	if got := forcedSnapshotInterval(700 * time.Millisecond); got != 2*time.Second {
+		t.Fatalf("expected capped fallback interval, got %v", got)
+	}
+	if got := forcedSnapshotInterval(300 * time.Millisecond); got != 1200*time.Millisecond {
+		t.Fatalf("expected minimum-base fallback interval, got %v", got)
 	}
 }

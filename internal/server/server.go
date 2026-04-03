@@ -247,6 +247,7 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request, sessionID str
 	iteration := 0
 	var cachedTree *tmux.Tree
 	var cachedSnapshot *tmux.Snapshot
+	var cachedSnapshotAt time.Time
 	lastTarget := ""
 	lastStateKey := ""
 	lastPayloadHash := ""
@@ -272,6 +273,7 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request, sessionID str
 			includeTree,
 			cachedTree,
 			cachedSnapshot,
+			cachedSnapshotAt,
 			lastTarget,
 			lastStateKey,
 		)
@@ -282,6 +284,7 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request, sessionID str
 		} else {
 			cachedTree = nextTree
 			cachedSnapshot = nextSnapshot
+			cachedSnapshotAt = time.Now()
 			lastTarget = nextTarget
 			lastStateKey = nextKey
 
@@ -364,7 +367,7 @@ func (a *App) buildStatePayload(ctx context.Context, sessionID string, includeTr
 	return payload, tree, nil
 }
 
-func (a *App) buildStreamStatePayload(ctx context.Context, sessionID string, includeTree bool, cachedTree *tmux.Tree, cachedSnapshot *tmux.Snapshot, cachedTarget, cachedStateKey string) (map[string]any, *tmux.Tree, *tmux.Snapshot, string, string, error) {
+func (a *App) buildStreamStatePayload(ctx context.Context, sessionID string, includeTree bool, cachedTree *tmux.Tree, cachedSnapshot *tmux.Snapshot, cachedSnapshotAt time.Time, cachedTarget, cachedStateKey string) (map[string]any, *tmux.Tree, *tmux.Snapshot, string, string, error) {
 	tree := cachedTree
 	var err error
 	if includeTree || tree == nil {
@@ -375,15 +378,20 @@ func (a *App) buildStreamStatePayload(ctx context.Context, sessionID string, inc
 	}
 
 	session, retargeted := a.sessions.normalize(sessionID, tree, a.cfg.InitialTarget)
+	target, promoted := normalizeViewTarget(tree, session.Target)
+	if promoted {
+		session = a.sessions.updateTarget(sessionID, target)
+		retargeted = true
+	}
 	stateKeys, err := a.cfg.Tmux.StateKeys(ctx, tree)
 	if err != nil {
 		return nil, nil, nil, "", "", err
 	}
 
-	target := session.Target
 	stateKey := stateKeys[target]
 	snapshot := cachedSnapshot
-	if snapshot == nil || cachedTarget != target || cachedStateKey != stateKey {
+	forceRefresh := cachedSnapshotAt.IsZero() || time.Since(cachedSnapshotAt) >= forcedSnapshotInterval(a.cfg.RefreshInterval)
+	if snapshot == nil || cachedTarget != target || cachedStateKey != stateKey || forceRefresh {
 		snapshot, err = a.cfg.Tmux.SnapshotWithTree(ctx, tree, target)
 		if err != nil {
 			return nil, nil, nil, "", "", err
@@ -415,14 +423,19 @@ func (a *App) buildViewPayload(ctx context.Context, sessionID, requestedTarget s
 		}
 	}
 	session, retargeted := a.sessions.normalize(sessionID, tree, a.cfg.InitialTarget)
-	snapshot, err := a.cfg.Tmux.SnapshotWithTree(ctx, tree, session.Target)
+	target, promoted := normalizeViewTarget(tree, session.Target)
+	if promoted {
+		session = a.sessions.updateTarget(sessionID, target)
+		retargeted = true
+	}
+	snapshot, err := a.cfg.Tmux.SnapshotWithTree(ctx, tree, target)
 	if err != nil {
 		return nil, err
 	}
 
 	return map[string]any{
 		"retargeted":     retargeted,
-		"selectedTarget": session.Target,
+		"selectedTarget": target,
 		"snapshot":       snapshot,
 	}, nil
 }
@@ -600,6 +613,35 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func forcedSnapshotInterval(base time.Duration) time.Duration {
+	if base <= 0 {
+		base = 700 * time.Millisecond
+	}
+	if base < 400*time.Millisecond {
+		base = 400 * time.Millisecond
+	}
+	return minDuration(3*base, 2*time.Second)
+}
+
+func normalizeViewTarget(tree *tmux.Tree, target string) (string, bool) {
+	for _, session := range tree.Sessions {
+		for _, window := range session.Windows {
+			if window.Target == target {
+				return target, false
+			}
+			for _, pane := range window.Panes {
+				if pane.Target == target {
+					if len(window.Panes) > 1 {
+						return window.Target, true
+					}
+					return target, false
+				}
+			}
+		}
+	}
+	return target, false
 }
 
 type filteredServerLogWriter struct {
