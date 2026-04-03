@@ -15,6 +15,9 @@ It starts a small web server on a high local port, prints a QR code in the termi
 - Supports multiple simultaneous viewers, each with their own selected target
 - Can run over plain HTTP or HTTPS with a self-signed certificate
 
+<img width="1632" height="1040" alt="image" src="https://github.com/user-attachments/assets/fd634898-6c2a-4f12-957b-a6e601a6b17b" />
+
+
 ## Current model
 
 - Read-only browser access
